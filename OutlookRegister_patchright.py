@@ -11,6 +11,7 @@ from get_token import get_access_token
 from patchright.sync_api import sync_playwright
 from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, jsonify, request
+import traceback
 
 # =========================================================
 # 加载配置
@@ -157,14 +158,24 @@ def get_thread_browser():
         try:
             p = sync_playwright().start()
             proxy_settings = {"server": proxy, "bypass": "localhost"} if proxy else None
-            b = p.chromium.launch(headless=True, args=['--lang=zh-CN'], proxy=proxy_settings)
+            b = p.chromium.launch(
+                headless=True,
+                args=[
+                    '--lang=zh-CN',
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                ],
+                proxy=proxy_settings
+            )
             thread_local.playwright = p
             thread_local.browser = b
             with cleanup_lock:
                 active_browsers.append(b)
                 active_playwrights.append(p)
         except Exception as e:
-            print(f"启动浏览器失败: {e}")
+            print(f"[ERROR] 启动浏览器失败: {e}")
+            traceback.print_exc()
             return None
     return thread_local.browser
 
@@ -181,7 +192,8 @@ def Outlook_register(page, email, password):
         start_time = time.time()
         page.wait_for_timeout(200)
         page.get_by_text('同意并继续').click(timeout=30000)
-    except: 
+    except Exception as e:
+        print(f"[FAIL] 注册页面加载失败: {e}")
         return False
     try:
         page.locator('[aria-label="新建电子邮件"]').type(email, delay=50, timeout=10000)
@@ -218,7 +230,8 @@ def Outlook_register(page, email, password):
                 continue
         else: 
             return False
-    except:
+    except Exception as e:
+        print(f"[FAIL] 注册流程异常: {e}")
         return False
     print(f'[Success: Email Registration] - {email}@outlook.com')
     return True
@@ -227,11 +240,14 @@ def process_single_flow(service=None):
     context = None
     try:
         browser = get_thread_browser()
-        if not browser: return False
+        if not browser:
+            print("[FAIL] 无法获取浏览器实例")
+            return False
         context = browser.new_context()
         page = context.new_page()
         email =  random_email(random.randint(12, 14))
         password = generate_strong_password(random.randint(11, 15))
+        print(f"[INFO] 开始注册: {email}@outlook.com")
         result = Outlook_register(page, email, password)
         if result and not enable_oauth2:
             push_to_manager(f"{email}@outlook.com", password)
@@ -244,7 +260,9 @@ def process_single_flow(service=None):
             push_to_manager(f"{email}@outlook.com", password, client_id, refresh_token)
             return True
         return False
-    except:
+    except Exception as e:
+        print(f"[ERROR] process_single_flow 异常: {e}")
+        traceback.print_exc()
         return False
     finally:
         if context: context.close()
