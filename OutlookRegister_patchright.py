@@ -13,6 +13,21 @@ from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, jsonify, request
 
 # =========================================================
+# 加载配置
+# =========================================================
+with open('config.json', 'r', encoding='utf-8') as f:
+    conf = json.load(f) 
+
+proxy = conf.get('proxy')
+enable_oauth2 = conf.get('enable_oauth2')
+concurrent_flows = conf.get("concurrent_flows", 5)
+max_tasks = conf.get("max_tasks", 100)
+max_captcha_retries = conf.get('max_captcha_retries', 2)
+client_id = conf.get('client_id', '')
+manager_url = conf.get('manager_url', '').rstrip('/')
+manager_login_password = conf.get('manager_login_password', '')
+
+# =========================================================
 # 全局状态管理 (RegistrarService)
 # =========================================================
 class RegistrarService:
@@ -22,8 +37,8 @@ class RegistrarService:
         self.succeeded_tasks = 0
         self.failed_tasks = 0
         self.task_counter = 0
-        self.max_tasks = 0
-        self.concurrent_flows = 0
+        self.max_tasks = max_tasks
+        self.concurrent_flows = concurrent_flows
         self.thread = None
         self.lock = threading.Lock()
 
@@ -281,8 +296,8 @@ def api_status():
 @app.route('/api/start', methods=['POST'])
 def api_start():
     data = request.json or {}
-    c = int(data.get('concurrent_flows', concurrent_flows))
-    m = int(data.get('max_tasks', max_tasks))
+    c = max(1, int(data.get('concurrent_flows', concurrent_flows)))
+    m = max(1, int(data.get('max_tasks', max_tasks)))
     ok, msg = registrar_service.start(c, m)
     return jsonify({"success": ok, "message": msg})
 
@@ -292,18 +307,6 @@ def api_stop():
     return jsonify({"success": ok, "message": msg})
 
 if __name__ == '__main__':
-    # 加载配置
-    with open('config.json', 'r', encoding='utf-8') as f:
-        conf = json.load(f) 
-    proxy = conf.get('proxy')
-    enable_oauth2 = conf.get('enable_oauth2')
-    concurrent_flows = conf.get("concurrent_flows", 5)
-    max_tasks = conf.get("max_tasks", 100)
-    max_captcha_retries = conf.get('max_captcha_retries', 2)
-    client_id = conf.get('client_id', '')
-    manager_url = conf.get('manager_url', '').rstrip('/')
-    manager_login_password = conf.get('manager_login_password', '')
-
     # 启动 Flask
     print("Registrar API 运行在 http://0.0.0.0:8000")
     app.run(host='0.0.0.0', port=8000)
