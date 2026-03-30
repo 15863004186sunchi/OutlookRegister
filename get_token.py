@@ -2,7 +2,10 @@ import json
 import base64
 import random
 import string
-import winreg
+try:
+    import winreg
+except ImportError:
+    winreg = None
 import hashlib
 import secrets
 import requests
@@ -10,13 +13,15 @@ from datetime import datetime
 from urllib.parse import quote, parse_qs
 
 def get_proxy():
+    if winreg is None:
+        return {"http": None, "https": None}
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Internet Settings") as key:
             proxy_enable, _ = winreg.QueryValueEx(key, "ProxyEnable")
             proxy_server, _ = winreg.QueryValueEx(key, "ProxyServer")
             if proxy_enable and proxy_server:
                 return {"http": f"http://{proxy_server}", "https": f"http://{proxy_server}"}
-    except WindowsError:
+    except (WindowsError, AttributeError):
         pass
     return {"http": None, "https": None}
 

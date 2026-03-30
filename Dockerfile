@@ -28,9 +28,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 
 # 安装 Python 依赖
-RUN pip install --upgrade pip && \
-    pip install -r requirements.txt && \
-    pip install requests
+RUN pip install --no-cache-dir \
+    patchright \
+    faker \
+    requests \
+    flask
+
+# 安装浏览器
+RUN patchright install --with-deps chromium
+
+# 暴露 API 端口
+EXPOSE 8000
 
 # 安装 Patchright 浏览器
 RUN python -m patchright install chromium

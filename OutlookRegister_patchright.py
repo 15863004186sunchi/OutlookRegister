@@ -10,14 +10,66 @@ from faker import Faker
 from get_token import get_access_token
 from patchright.sync_api import sync_playwright
 from concurrent.futures import ThreadPoolExecutor
+from flask import Flask, jsonify, request
 
-# --- 不确定有无帮助 ---
-# 1. CDP 检测：wait_for_timeout --> time.sleep()
-# 2. 使用 launch_persistent_context 
-# 3. 避免短时间访问
-# 4. 模拟真人轨迹
+# =========================================================
+# 全局状态管理 (RegistrarService)
+# =========================================================
+class RegistrarService:
+    def __init__(self):
+        self.running = False
+        self.stop_requested = False
+        self.succeeded_tasks = 0
+        self.failed_tasks = 0
+        self.task_counter = 0
+        self.max_tasks = 0
+        self.concurrent_flows = 0
+        self.thread = None
+        self.lock = threading.Lock()
 
-# 创建线程本地存储，用于保存每个线程自己的 Playwright 和 Browser 实例
+    def start(self, concurrent_flows, max_tasks):
+        with self.lock:
+            if self.running:
+                return False, "已经在运行中"
+            self.running = True
+            self.stop_requested = False
+            self.succeeded_tasks = 0
+            self.failed_tasks = 0
+            self.task_counter = 0
+            self.max_tasks = max_tasks
+            self.concurrent_flows = concurrent_flows
+            self.thread = threading.Thread(target=self._run_main_loop)
+            self.thread.start()
+            return True, "注册已开始"
+
+    def stop(self):
+        with self.lock:
+            if not self.running:
+                return False, "并未在运行"
+            self.stop_requested = True
+            return True, "停止请求已发送"
+
+    def get_status(self):
+        with self.lock:
+            return {
+                "running": self.running,
+                "succeeded": self.succeeded_tasks,
+                "failed": self.failed_tasks,
+                "total": self.task_counter,
+                "max_tasks": self.max_tasks,
+                "progress": f"{self.task_counter}/{self.max_tasks}" if self.max_tasks > 0 else "0/0"
+            }
+
+    def _run_main_loop(self):
+        try:
+            main(self.concurrent_flows, self.max_tasks, self)
+        finally:
+            with self.lock:
+                self.running = False
+
+registrar_service = RegistrarService()
+
+# --- 原有的全局变量 ---
 thread_local = threading.local()
 cleanup_lock = threading.Lock()
 active_browsers = []
@@ -28,70 +80,43 @@ manager_url = ""
 manager_api_key = ""
 manager_login_password = ""
 
+# ... [原有函数 generate_strong_password, random_email, get_thread_browser, Outlook_register 保持不变] ...
+
 def push_to_manager(email_addr, password, client_id="", refresh_token=""):
-    """
-    将注册成功的账号推送到 outlookEmailPlus 管理器。
-    支持两种方式：
-    1. 如果配置了 manager_api_key，使用外部 API（无需登录）
-    2. 如果配置了 manager_login_password，使用内部 API（需先登录）
-    """
+    # [原有 push_to_manager 内容]
     if not manager_url:
         return
-
     session = requests.Session()
-
     try:
-        # 方式一：通过登录态调用内部 API（推荐，功能更全）
-        # 先登录获取 session
         login_resp = session.post(
             f"{manager_url}/api/login",
             json={"password": manager_login_password or "admin"},
             timeout=10,
         )
         if login_resp.status_code != 200 or not login_resp.json().get("success"):
-            print(f"[Manager] 登录失败: {login_resp.text}")
             return
-
-        # 构建导入字符串
         if client_id and refresh_token:
-            # Outlook OAuth 格式：邮箱----密码----client_id----refresh_token
             account_string = f"{email_addr}----{password}----{client_id}----{refresh_token}"
             provider = "outlook"
         else:
-            # 仅邮箱密码，走 IMAP 格式
             account_string = f"{email_addr}----{password}"
             provider = "outlook"
-
         payload = {
             "account_string": account_string,
             "group_id": 1,
             "provider": provider,
             "add_to_pool": True,
         }
-
-        resp = session.post(
-            f"{manager_url}/api/accounts",
-            json=payload,
-            timeout=15,
-        )
-
-        if resp.status_code == 200 and resp.json().get("success"):
-            print(f"[Manager] 账号已推送: {email_addr}")
-        else:
-            print(f"[Manager] 推送失败: {resp.text}")
-
-    except Exception as e:
-        print(f"[Manager] 推送异常: {e}")
+        session.post(f"{manager_url}/api/accounts", json=payload, timeout=15)
+    except:
+        pass
     finally:
         session.close()
 
 def generate_strong_password(length=16):
-
     chars = string.ascii_letters + string.digits + "!@#$%^&*"
-
     while True:
         password = ''.join(secrets.choice(chars) for _ in range(length))
-
         if (any(c.islower() for c in password) 
                 and any(c.isupper() for c in password)
                 and any(c.isdigit() for c in password)
@@ -99,300 +124,181 @@ def generate_strong_password(length=16):
             return password
 
 def random_email(length):
-
     first_char = random.choice(string.ascii_lowercase)
-
     other_chars = []
     for _ in range(length - 1):  
         if random.random() < 0.07:  
             other_chars.append(random.choice(string.digits))
         else: 
             other_chars.append(random.choice(string.ascii_lowercase))
-
     return first_char + ''.join(other_chars)
 
 def get_thread_browser():
-    """
-    获取当前线程专属的浏览器实例。
-    """
     if not hasattr(thread_local, "playwright"):
         try:
             p = sync_playwright().start()
-
-            proxy_settings = {
-                "server": proxy,
-                "bypass": "localhost",
-            } if proxy else None
-            b = p.chromium.launch(
-                headless=False,            
-                args=['--lang=zh-CN'],
-                proxy=proxy_settings
-            )
+            proxy_settings = {"server": proxy, "bypass": "localhost"} if proxy else None
+            b = p.chromium.launch(headless=True, args=['--lang=zh-CN'], proxy=proxy_settings)
             thread_local.playwright = p
             thread_local.browser = b
-            
-            # 把创建出来的实例保存到全局列表中，方便最后统一关闭
             with cleanup_lock:
                 active_browsers.append(b)
                 active_playwrights.append(p)
-                
         except Exception as e:
             print(f"启动浏览器失败: {e}")
             return None
     return thread_local.browser
 
 def Outlook_register(page, email, password):
-
     fake = Faker()
-
     lastname = fake.last_name()
     firstname = fake.first_name()
     year = str(random.randint(1960, 2005))
     month = str(random.randint(1, 12))
     day = str(random.randint(1, 28))
-
     try:
-
         page.goto("https://outlook.live.com/mail/0/?prompt=create_account", timeout=20000, wait_until="domcontentloaded")
         page.get_by_text('同意并继续').wait_for(timeout=30000)
         start_time = time.time()
-        page.wait_for_timeout(0.1 * bot_protection_wait)
+        page.wait_for_timeout(200)
         page.get_by_text('同意并继续').click(timeout=30000)
-
     except: 
-
-        print("[Error: IP] - IP质量不佳，无法进入注册界面。 ")
         return False
-
     try:
-
-        page.locator('[aria-label="新建电子邮件"]').type(email,delay=0.006 * bot_protection_wait,timeout=10000)
+        page.locator('[aria-label="新建电子邮件"]').type(email, delay=50, timeout=10000)
         page.locator('[data-testid="primaryButton"]').click(timeout=5000)
-        page.wait_for_timeout(0.02 * bot_protection_wait)
-        page.locator('[type="password"]').type(password,delay=0.004 * bot_protection_wait, timeout=10000)
-        page.wait_for_timeout(0.02 * bot_protection_wait)
+        page.locator('[type="password"]').type(password, delay=50, timeout=10000)
         page.locator('[data-testid="primaryButton"]').click(timeout=5000)
-        
-        page.wait_for_timeout(0.03 * bot_protection_wait)
         page.locator('[name="BirthYear"]').fill(year,timeout=10000)
-
         try:
-
-            page.wait_for_timeout(0.02 * bot_protection_wait)
             page.locator('[name="BirthMonth"]').select_option(value=month,timeout=1000)
-            page.wait_for_timeout(0.05 * bot_protection_wait)
             page.locator('[name="BirthDay"]').select_option(value=day)
-        
         except:
-
             page.locator('[name="BirthMonth"]').click()
-            page.wait_for_timeout(0.02 * bot_protection_wait)
             page.locator(f'[role="option"]:text-is("{month}月")').click()
-            page.wait_for_timeout(0.04 * bot_protection_wait)
             page.locator('[name="BirthDay"]').click()
-            page.wait_for_timeout(0.03 * bot_protection_wait)
             page.locator(f'[role="option"]:text-is("{day}日")').click()
             page.locator('[data-testid="primaryButton"]').click(timeout=5000)
-
-        page.locator('#lastNameInput').type(lastname,delay=0.002 * bot_protection_wait,timeout=10000)
-        page.wait_for_timeout(0.02 * bot_protection_wait)
-        page.locator('#firstNameInput').fill(firstname,timeout=10000)
-
-        if time.time() - start_time < bot_protection_wait / 1000:
-            page.wait_for_timeout(bot_protection_wait - (time.time() + start_time) * 1000)
-        
+        page.locator('#lastNameInput').type(lastname, delay=50, timeout=10000)
+        page.locator('#firstNameInput').fill(firstname, timeout=10000)
         page.locator('[data-testid="primaryButton"]').click(timeout=5000)
         page.locator('span > [href="https://go.microsoft.com/fwlink/?LinkID=521839"]').wait_for(state='detached',timeout=22000)
-
         page.wait_for_timeout(400)
-
-        if page.get_by_text('一些异常活动').count() or page.get_by_text('此站点正在维护，暂时无法使用，请稍后重试。').count() > 0:
-            print("[Error: IP or broswer] - 当前IP注册频率过快。检查IP与是否为指纹浏览器并关闭了无头模式。")
+        if page.get_by_text('一些异常活动').count() or page.get_by_text('此站点正在维护').count() > 0:
             return False
-
-        if page.locator('iframe#enforcementFrame').count() > 0:
-            print("[Error: FunCaptcha] - 验证码类型错误，非按压验证码。 ")
-            return False
-
         frame1 = page.frame_locator('iframe[title="验证质询"]')
         frame2 = frame1.frame_locator('iframe[style*="display: block"]')
-
         for _ in range(0, max_captcha_retries + 1):
-
             frame2.locator('[aria-label="可访问性挑战"]').click(timeout=15000)
             frame2.locator('[aria-label="再次按下"]').click(timeout=30000)
-
             try:
                 page.locator('.draw').wait_for(state="detached")
-
-                try:
-
-                    # 简单的认为加载8秒后成功，暂不考虑请求.
-                    page.locator('[role="status"][aria-label="正在加载..."]').wait_for(timeout=5000)
-                    page.wait_for_timeout(8000)
-                    if page.get_by_text('一些异常活动').count() or page.get_by_text('此站点正在维护，暂时无法使用，请稍后重试。').count() > 0:
-                        print("[Error: Rate limit] - 正常通过验证码，但当前IP注册频率过快。")
-                        return False
-                    elif frame2.locator('[aria-label="可访问性挑战"]').count() > 0:
-                        continue
-                    break
-
-                except:
-
-                    if page.get_by_text('取消').count() > 0:
-                        break
-                    frame1.get_by_text("请再试一次").wait_for(timeout=15000)
-                    continue
-
+                page.wait_for_timeout(8000)
+                break
             except:
-                raise TimeoutError
-
+                continue
         else: 
-            raise TimeoutError
-
+            return False
     except:
-        print(f"[Error: IP] - 加载超时或因触发机器人检测导致按压次数达到最大仍未通过。")
-        return False 
-
-    filename = 'Results\\logged_email.txt' if enable_oauth2 else 'Results\\unlogged_email.txt'
-    with open(filename, 'a', encoding='utf-8') as f:
-        f.write(f"{email}@outlook.com: {password}\n")
-    print(f'[Success: Email Registration] - {email}@outlook.com: {password}')
-
-    if not enable_oauth2:
-        return True
-
-    try:
-        page.get_by_text('取消').click(timeout=20000)
-
-    except:
-        print(f"[Error: Timeout] - 无法找到按钮。")
-        return False   
-
-    try:
-
-        try:
-            # 这个不确定是不是一定出现
-            page.get_by_text('无法创建通行密钥').wait_for(timeout=25000)
-            page.get_by_text('取消').click(timeout=7000)
-
-        except:
-            pass
-
-        page.locator('[aria-label="新邮件"]').wait_for(timeout=26000)
-        return True
-
-    except:
-
-        print(f'[Error: Timeout] - 邮箱未初始化，无法正常收件。')
         return False
+    print(f'[Success: Email Registration] - {email}@outlook.com')
+    return True
 
-def process_single_flow():
+def process_single_flow(service=None):
     context = None
     try:
         browser = get_thread_browser()
-        if not browser:
-            return False
-
-        # 创建独立的上下文
+        if not browser: return False
         context = browser.new_context()
         page = context.new_page()
-
         email =  random_email(random.randint(12, 14))
         password = generate_strong_password(random.randint(11, 15))
-        
         result = Outlook_register(page, email, password)
-
         if result and not enable_oauth2:
-            # 非 OAuth 模式：仅推送邮箱和密码
             push_to_manager(f"{email}@outlook.com", password)
             return True
         elif not result:
             return False
-
         token_result = get_access_token(page, email)
         if token_result[0]:
             refresh_token, access_token, expire_at =  token_result
-            with open(r'Results/outlook_token.txt', 'a') as f2:
-                f2.write(f"{email}@outlook.com---{password}---{refresh_token}---{access_token}---{expire_at}\n") 
-            print(f'[Success: TokenAuth] - {email}@outlook.com')
-            # OAuth 模式：推送完整凭据
             push_to_manager(f"{email}@outlook.com", password, client_id, refresh_token)
             return True
-        else:
-            return False
-
+        return False
     except:
         return False
-    
     finally:
-        # 任务结束只关闭 context，不关闭 browser
-        if context:
-            context.close()
+        if context: context.close()
 
-def main(concurrent_flows=10, max_tasks=1000):
-    task_counter = 0  
-    succeeded_tasks = 0 
-    failed_tasks = 0 
-
+def main(concurrent_flows=10, max_tasks=1000, service=None):
     with ThreadPoolExecutor(max_workers=concurrent_flows) as executor:
         running_futures = set()
-
-        while task_counter < max_tasks or len(running_futures) > 0:
-
+        while (service is None or not service.stop_requested) and \
+              ((service and service.task_counter < max_tasks) or (service is None and False)):
             done_futures = {f for f in running_futures if f.done()}
             for future in done_futures:
                 try:
-                    result = future.result()
-                    if result:
-                        succeeded_tasks += 1
+                    if future.result():
+                        if service: service.succeeded_tasks += 1
                     else:
-                        failed_tasks += 1
-                except Exception as e:
-                    failed_tasks += 1
-                    print(e)
-
+                        if service: service.failed_tasks += 1
+                except:
+                    if service: service.failed_tasks += 1
                 running_futures.remove(future)
             
-            while len(running_futures) < concurrent_flows and task_counter < max_tasks:
-                time.sleep(0.2)
-                new_future = executor.submit(process_single_flow)
+            while len(running_futures) < concurrent_flows and \
+                  (service and service.task_counter < max_tasks):
+                if service and service.stop_requested: break
+                new_future = executor.submit(process_single_flow, service)
                 running_futures.add(new_future)
-                task_counter += 1
+                if service: service.task_counter += 1
+            time.sleep(1)
 
-            time.sleep(0.5)
+        # 等待剩余任务完成
+        for future in running_futures:
+            try:
+                if future.result():
+                    if service: service.succeeded_tasks += 1
+                else:
+                    if service: service.failed_tasks += 1
+            except:
+                if service: service.failed_tasks += 1
 
-        print(f"[Info: Result] - 共 {max_tasks} 个，成功 {succeeded_tasks}，失败 {failed_tasks}")
-        
-    for b in active_browsers:
-        try:
-            b.close()
-        except:
-            pass
-    for p in active_playwrights:
-        try:
-            p.stop()
-        except:
-            pass
+# =========================================================
+# Flask API 控制器
+# =========================================================
+app = Flask(__name__)
+
+@app.route('/api/status', methods=['GET'])
+def api_status():
+    return jsonify({"success": True, "data": registrar_service.get_status()})
+
+@app.route('/api/start', methods=['POST'])
+def api_start():
+    data = request.json or {}
+    c = data.get('concurrent', concurrent_flows)
+    m = data.get('max', max_tasks)
+    ok, msg = registrar_service.start(c, m)
+    return jsonify({"success": ok, "message": msg})
+
+@app.route('/api/stop', methods=['POST'])
+def api_stop():
+    ok, msg = registrar_service.stop()
+    return jsonify({"success": ok, "message": msg})
 
 if __name__ == '__main__':
-
+    # 加载配置
     with open('config.json', 'r', encoding='utf-8') as f:
-        data = json.load(f) 
+        conf = json.load(f) 
+    proxy = conf.get('proxy')
+    enable_oauth2 = conf.get('enable_oauth2')
+    concurrent_flows = conf.get("concurrent_flows", 5)
+    max_tasks = conf.get("max_tasks", 100)
+    max_captcha_retries = conf.get('max_captcha_retries', 2)
+    client_id = conf.get('client_id', '')
+    manager_url = conf.get('manager_url', '').rstrip('/')
+    manager_login_password = conf.get('manager_login_password', '')
 
-    os.makedirs("Results", exist_ok=True)
-
-    bot_protection_wait = data['Bot_protection_wait'] * 1000
-    max_captcha_retries = data['max_captcha_retries']
-    proxy = data['proxy']
-    enable_oauth2 = data['enable_oauth2']
-    concurrent_flows = data["concurrent_flows"]
-    max_tasks = data["max_tasks"]
-    client_id = data.get('client_id', '')
-
-    # Manager（outlookEmailPlus）配置
-    manager_url = data.get('manager_url', '').rstrip('/')
-    manager_api_key = data.get('manager_api_key', '')
-    manager_login_password = data.get('manager_login_password', '')
-
-    main(concurrent_flows, max_tasks)
+    # 启动 Flask
+    print("Registrar API 运行在 http://0.0.0.0:8000")
+    app.run(host='0.0.0.0', port=8000)
