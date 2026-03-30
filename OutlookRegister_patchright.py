@@ -187,7 +187,8 @@ def Outlook_register(page, email, password):
     month = str(random.randint(1, 12))
     day = str(random.randint(1, 28))
     try:
-        page.goto("https://outlook.live.com/mail/0/?prompt=create_account", timeout=20000, wait_until="domcontentloaded")
+        print(f"[INFO] 访问注册页面 (via proxy: {proxy or 'direct'})...")
+        page.goto("https://outlook.live.com/mail/0/?prompt=create_account", timeout=40000, wait_until="domcontentloaded")
         page.get_by_text('同意并继续').wait_for(timeout=30000)
         start_time = time.time()
         page.wait_for_timeout(200)
@@ -291,15 +292,30 @@ def main(concurrent_flows=10, max_tasks=1000, service=None):
                 if service: service.task_counter += 1
             time.sleep(1)
 
-        # 等待剩余任务完成
-        for future in running_futures:
-            try:
-                if future.result():
-                    if service: service.succeeded_tasks += 1
-                else:
+        # 停止请求 或 任务达上限
+        if service and service.stop_requested:
+            print("[INFO] 收到停止请求，正在取消剩余任务...")
+            for future in running_futures:
+                future.cancel()
+            # 等待最多 5 秒让正在运行的任务结束
+            for future in running_futures:
+                if future.cancelled():
+                    continue
+                try:
+                    future.result(timeout=3)
+                except:
+                    pass
+            print("[INFO] 注册已停止")
+        else:
+            # 正常结束 - 等待剩余任务完成
+            for future in running_futures:
+                try:
+                    if future.result():
+                        if service: service.succeeded_tasks += 1
+                    else:
+                        if service: service.failed_tasks += 1
+                except:
                     if service: service.failed_tasks += 1
-            except:
-                if service: service.failed_tasks += 1
 
 # =========================================================
 # Flask API 控制器
