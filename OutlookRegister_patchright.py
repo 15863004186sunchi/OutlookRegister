@@ -52,12 +52,16 @@ class RegistrarService:
     def get_status(self):
         with self.lock:
             return {
-                "running": self.running,
-                "succeeded": self.succeeded_tasks,
-                "failed": self.failed_tasks,
-                "total": self.task_counter,
-                "max_tasks": self.max_tasks,
-                "progress": f"{self.task_counter}/{self.max_tasks}" if self.max_tasks > 0 else "0/0"
+                "is_running": self.running,
+                "stats": {
+                    "succeeded": self.succeeded_tasks,
+                    "failed": self.failed_tasks,
+                    "count": self.task_counter,
+                },
+                "config": {
+                    "concurrent_flows": self.concurrent_flows,
+                    "max_tasks": self.max_tasks,
+                }
             }
 
     def _run_main_loop(self):
@@ -271,13 +275,14 @@ app = Flask(__name__)
 
 @app.route('/api/status', methods=['GET'])
 def api_status():
-    return jsonify({"success": True, "data": registrar_service.get_status()})
+    status = registrar_service.get_status()
+    return jsonify(status)
 
 @app.route('/api/start', methods=['POST'])
 def api_start():
     data = request.json or {}
-    c = data.get('concurrent', concurrent_flows)
-    m = data.get('max', max_tasks)
+    c = int(data.get('concurrent_flows', concurrent_flows))
+    m = int(data.get('max_tasks', max_tasks))
     ok, msg = registrar_service.start(c, m)
     return jsonify({"success": ok, "message": msg})
 

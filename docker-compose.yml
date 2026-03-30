@@ -1,14 +1,15 @@
 # OutlookRegister + outlookEmailPlus 统一部署
 # 使用方法: docker compose up -d
 
-version: "3.8"
 
 services:
   # ============================
   # 邮箱管理器 (outlookEmailPlus)
   # ============================
   manager:
-    image: guangshanshui/outlook-email-plus:latest
+    build:
+      context: ../outlookEmailPlus
+      dockerfile: Dockerfile
     container_name: outlook-manager
     restart: unless-stopped
     ports:
@@ -39,7 +40,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: outlook-registrar
-    restart: "no"
+    restart: unless-stopped
     depends_on:
       manager:
         condition: service_healthy

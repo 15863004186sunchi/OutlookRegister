@@ -40,14 +40,11 @@ RUN patchright install --with-deps chromium
 # 暴露 API 端口
 EXPOSE 8000
 
-# 安装 Patchright 浏览器
-RUN python -m patchright install chromium
-
 # 复制应用代码
 COPY . .
 
 # 创建结果目录
 RUN mkdir -p /app/Results
 
-# 默认启动注册脚本
+# 默认启动注册脚本 (Flask API 模式)
 CMD ["python", "OutlookRegister_patchright.py"]

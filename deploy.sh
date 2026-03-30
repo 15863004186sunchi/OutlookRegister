@@ -54,6 +54,21 @@ fi
 log "Docker Compose 可用: $(docker compose version --short)"
 
 # =========================================================
+# 3. 克隆/更新项目代码
+# =========================================================
+PROJECT_DIR=$(pwd)
+MANAGER_DIR="$PROJECT_DIR/../outlookEmailPlus"
+
+if [ ! -d "$MANAGER_DIR" ]; then
+    info "克隆 outlookEmailPlus 管理器代码..."
+    git clone https://github.com/15863004186sunchi/outlookEmailPlus.git "$MANAGER_DIR"
+    log "管理器代码已克隆"
+else
+    info "更新 outlookEmailPlus 管理器代码..."
+    git -C "$MANAGER_DIR" pull || warn "管理器代码更新失败，使用本地版本"
+fi
+
+# =========================================================
 # 3. 生成 .env 配置文件
 # =========================================================
 ENV_FILE=".env"
@@ -135,14 +150,11 @@ fi
 # =========================================================
 # 6. 构建并启动服务
 # =========================================================
-info "拉取 Manager 镜像..."
-docker compose pull manager
+info "构建镜像..."
+docker compose build
 
-info "构建 Registrar 镜像..."
-docker compose build registrar
-
-info "启动 Manager 服务..."
-docker compose up -d manager
+info "启动所有服务..."
+docker compose up -d
 
 # 等待 Manager 健康
 info "等待 Manager 健康检查通过..."
@@ -152,8 +164,7 @@ for i in $(seq 1 30); do
         break
     fi
     if [ "$i" -eq 30 ]; then
-        err "Manager 启动超时，请检查日志: docker compose logs manager"
-        exit 1
+        warn "Manager 健康检查未通过，请检查日志: docker compose logs manager"
     fi
     sleep 2
 done
