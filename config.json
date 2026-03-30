@@ -1,6 +1,6 @@
 {
     "browser_path": "",
-    "proxy": "http://127.0.0.1:7897",
+    "proxy": "http://nenuncxc:ufpi8flnz6uh@9.142.41.22:6192",
     "Bot_protection_wait": 12,
     "max_captcha_retries": 2,
     "concurrent_flows": 5,
@@ -14,5 +14,8 @@
         "https://graph.microsoft.com/Mail.Send",
         "https://graph.microsoft.com/User.Read"
     ],
-    "info": "指纹浏览器要能过https://www.browserscan.net，否则请使用patchright。如果enable_oauth2为false，则最后三个参数可选。如果使用patchright，第一个参数可留空。其他情况下，必须填写所有参数。"
+    "manager_url": "http://manager:5000",
+    "manager_api_key": "",
+    "manager_login_password": "your-login-password",
+    "info": "指纹浏览器要能过https://www.browserscan.net，否则请使用patchright。如果enable_oauth2为false，则最后三个参数可选。如果使用patchright，第一个参数可留空。其他情况下，必须填写所有参数。manager_url 为 outlookEmailPlus 管理器地址，Docker 内部网络使用 http://manager:5000。"
 }

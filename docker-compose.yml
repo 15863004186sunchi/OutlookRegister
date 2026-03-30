@@ -1,0 +1,60 @@
+# OutlookRegister + outlookEmailPlus 统一部署
+# 使用方法: docker compose up -d
+
+version: "3.8"
+
+services:
+  # ============================
+  # 邮箱管理器 (outlookEmailPlus)
+  # ============================
+  manager:
+    image: guangshanshui/outlook-email-plus:latest
+    container_name: outlook-manager
+    restart: unless-stopped
+    ports:
+      - "${MANAGER_PORT:-5000}:5000"
+    volumes:
+      - manager_data:/app/data
+    environment:
+      - SECRET_KEY=${SECRET_KEY:-change-me-to-a-random-64-char-string}
+      - LOGIN_PASSWORD=${LOGIN_PASSWORD:-admin123}
+      - ALLOW_LOGIN_PASSWORD_CHANGE=${ALLOW_LOGIN_PASSWORD_CHANGE:-true}
+      - OAUTH_CLIENT_ID=${OAUTH_CLIENT_ID:-}
+      - OAUTH_REDIRECT_URI=${OAUTH_REDIRECT_URI:-}
+      - SCHEDULER_AUTOSTART=true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:5000/healthz', timeout=4).read()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    networks:
+      - outlook-net
+
+  # ============================
+  # 注册机 (OutlookRegister)
+  # ============================
+  registrar:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: outlook-registrar
+    restart: "no"
+    depends_on:
+      manager:
+        condition: service_healthy
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - ./Results:/app/Results
+    environment:
+      - DISPLAY=:99
+    networks:
+      - outlook-net
+
+volumes:
+  manager_data:
+    driver: local
+
+networks:
+  outlook-net:
+    driver: bridge

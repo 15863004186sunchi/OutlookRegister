@@ -5,6 +5,7 @@ import random
 import string
 import secrets
 import threading
+import requests
 from faker import Faker
 from get_token import get_access_token
 from patchright.sync_api import sync_playwright
@@ -21,6 +22,68 @@ thread_local = threading.local()
 cleanup_lock = threading.Lock()
 active_browsers = []
 active_playwrights = []
+
+# Manager（outlookEmailPlus）推送相关
+manager_url = ""
+manager_api_key = ""
+manager_login_password = ""
+
+def push_to_manager(email_addr, password, client_id="", refresh_token=""):
+    """
+    将注册成功的账号推送到 outlookEmailPlus 管理器。
+    支持两种方式：
+    1. 如果配置了 manager_api_key，使用外部 API（无需登录）
+    2. 如果配置了 manager_login_password，使用内部 API（需先登录）
+    """
+    if not manager_url:
+        return
+
+    session = requests.Session()
+
+    try:
+        # 方式一：通过登录态调用内部 API（推荐，功能更全）
+        # 先登录获取 session
+        login_resp = session.post(
+            f"{manager_url}/api/login",
+            json={"password": manager_login_password or "admin"},
+            timeout=10,
+        )
+        if login_resp.status_code != 200 or not login_resp.json().get("success"):
+            print(f"[Manager] 登录失败: {login_resp.text}")
+            return
+
+        # 构建导入字符串
+        if client_id and refresh_token:
+            # Outlook OAuth 格式：邮箱----密码----client_id----refresh_token
+            account_string = f"{email_addr}----{password}----{client_id}----{refresh_token}"
+            provider = "outlook"
+        else:
+            # 仅邮箱密码，走 IMAP 格式
+            account_string = f"{email_addr}----{password}"
+            provider = "outlook"
+
+        payload = {
+            "account_string": account_string,
+            "group_id": 1,
+            "provider": provider,
+            "add_to_pool": True,
+        }
+
+        resp = session.post(
+            f"{manager_url}/api/accounts",
+            json=payload,
+            timeout=15,
+        )
+
+        if resp.status_code == 200 and resp.json().get("success"):
+            print(f"[Manager] 账号已推送: {email_addr}")
+        else:
+            print(f"[Manager] 推送失败: {resp.text}")
+
+    except Exception as e:
+        print(f"[Manager] 推送异常: {e}")
+    finally:
+        session.close()
 
 def generate_strong_password(length=16):
 
@@ -241,6 +304,8 @@ def process_single_flow():
         result = Outlook_register(page, email, password)
 
         if result and not enable_oauth2:
+            # 非 OAuth 模式：仅推送邮箱和密码
+            push_to_manager(f"{email}@outlook.com", password)
             return True
         elif not result:
             return False
@@ -248,9 +313,11 @@ def process_single_flow():
         token_result = get_access_token(page, email)
         if token_result[0]:
             refresh_token, access_token, expire_at =  token_result
-            with open(r'Results\outlook_token.txt', 'a') as f2:
+            with open(r'Results/outlook_token.txt', 'a') as f2:
                 f2.write(f"{email}@outlook.com---{password}---{refresh_token}---{access_token}---{expire_at}\n") 
             print(f'[Success: TokenAuth] - {email}@outlook.com')
+            # OAuth 模式：推送完整凭据
+            push_to_manager(f"{email}@outlook.com", password, client_id, refresh_token)
             return True
         else:
             return False
@@ -321,5 +388,11 @@ if __name__ == '__main__':
     enable_oauth2 = data['enable_oauth2']
     concurrent_flows = data["concurrent_flows"]
     max_tasks = data["max_tasks"]
+    client_id = data.get('client_id', '')
+
+    # Manager（outlookEmailPlus）配置
+    manager_url = data.get('manager_url', '').rstrip('/')
+    manager_api_key = data.get('manager_api_key', '')
+    manager_login_password = data.get('manager_login_password', '')
 
     main(concurrent_flows, max_tasks)
